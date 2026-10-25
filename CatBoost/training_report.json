@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "input_rows": 50,
+  "unlabeled_skipped": 0,
+  "duplicates_removed": 0,
+  "labeled_rows": 50,
+  "class_counts": {
+    "0": 20,
+    "1": 30
+  },
+  "calibrated": false,
+  "positive_label": 1,
+  "limitation": "Оценка положительного класса не является доказательством перехода бизнеса. Калибровка не выполнена.",
+  "validation_status": "held_out_test",
+  "split": {
+    "train": {
+      "rows": 31,
+      "entity_groups": 18,
+      "positive": 19,
+      "negative": 12
+    },
+    "validation": {
+      "rows": 9,
+      "entity_groups": 6,
+      "positive": 4,
+      "negative": 5
+    },
+    "test": {
+      "rows": 10,
+      "entity_groups": 6,
+      "positive": 7,
+      "negative": 3
+    }
+  },
+  "validation_metrics": {
+    "rows": 9,
+    "positive": 4,
+    "roc_auc": 0.95,
+    "average_precision": 0.9166666666666666,
+    "log_loss": 0.23463177113407607,
+    "brier_score": 0.07492427560366403
+  },
+  "test_metrics": {
+    "rows": 10,
+    "positive": 7,
+    "roc_auc": 0.9285714285714286,
+    "average_precision": 0.9464285714285713,
+    "log_loss": 0.37604861747880325,
+    "brier_score": 0.1392179859787636
+  },
+  "test_ranking_metrics": {
+    "source_cases_with_positives": 4,
+    "mean_recall_at_3": 1.0,
+    "mean_recall_at_5": 1.0,
+    "mean_recall_at_10": 1.0
+  },
+  "evaluation_note": "Валидация используется для ранней остановки; тест не используется при обучении. После просмотра теста не подбирайте по нему параметры.",
+  "selection_metric": "Logloss",
+  "best_iteration": 399,
+  "training_profile": "conservative_demo_v1",
+  "regularization": {
+    "depth": 3,
+    "learning_rate": 0.03,
+    "l2_leaf_reg": 20.0,
+    "random_strength": 1.0
+  },
+  "score_note": "Некалиброванная оценка положительного класса. Более сильная регуляризация не гарантирует диапазон 0.8–0.9 и не является калибровкой. Взвешивание классов также влияет на интерпретацию оценки.",
+  "feature_importance": {
+    "staff_search_completed": 0.0,
+    "staff_candidate_found": 0.015033041492884645,
+    "staff_common_count": 3.2815524501206244,
+    "staff_source_share_pct": 3.7026582732676343,
+    "staff_regular_common_count": 0.0,
+    "staff_sequential_count": 3.231532966462176,
+    "suppliers_search_completed": 0.0,
+    "suppliers_candidate_found": 0.1052807687474795,
+    "suppliers_common_count": 13.672567286401815,
+    "suppliers_source_count_share_pct": 7.637563428104011,
+    "suppliers_source_turnover_share_pct": 8.407107669378375,
+    "suppliers_common_source_amount": 4.3366534890365775,
+    "suppliers_common_candidate_amount": 2.820113903964775,
+    "buyers_search_completed": 0.0,
+    "buyers_candidate_found": 0.8804114803157214,
+    "buyers_common_count": 5.823162947167777,
+    "buyers_source_count_share_pct": 13.596816338446168,
+    "buyers_source_turnover_share_pct": 3.1370624497581105,
+    "buyers_common_source_amount": 6.155987664608178,
+    "buyers_common_candidate_amount": 8.097204683710878,
+    "kkt_search_completed": 0.0,
+    "kkt_candidate_found": 0.857263171261052,
+    "kkt_common_count": 8.274071572857217,
+    "kkt_source_share_pct": 5.967956414898561
+  },
+  "model_version": "20261025T115701Z_94bb2301",
+  "catboost_version": "1.2.10",
+  "seed": 42,
+  "iterations_requested": 400,
+  "trees": 400
+}
