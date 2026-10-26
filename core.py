@@ -10,9 +10,16 @@ SCHEMAS = {
     "Продажи": ["ИНН организации", "ИНН покупателя", "Дата", "Сумма", "Код операции"],
     "ККТ": ["ИНН организации", "Модель", "Заводской номер", "Адрес", "Дата регистрации", "Дата снятия"],
     "Банк": ["ИНН организации", "ИНН контрагента", "Дата", "Направление", "Сумма", "Назначение"],
+    "Организации": ["ИНН организации", "Наименование организации", "Роль в примере"],
 }
+OPTIONAL_SCHEMAS = {
+    "Сотрудники": ["ФИО сотрудника", "ИНН сотрудника"],
+    "Организации": ["ФИО учредителя", "ИНН учредителя", "ФИО руководителя", "ИНН руководителя"],
+}
+OPTIONAL_COLUMNS = {column for columns in OPTIONAL_SCHEMAS.values() for column in columns}
 INN_COLS = {"ИНН организации": (10,), "ИНН поставщика": (10, 12), "ИНН покупателя": (10, 12),
-            "ИНН контрагента": (10, 12)}
+            "ИНН контрагента": (10, 12), "ИНН сотрудника": (12,), "ИНН учредителя": (12,),
+            "ИНН руководителя": (12,)}
 
 
 def clean(value):
@@ -94,7 +101,8 @@ def load_book(path):
             if absent:
                 error(f"{sheet}: отсутствуют колонки: {', '.join(absent)}")
                 continue
-            frame = frame.loc[:, SCHEMAS[sheet]].copy()
+            selected = SCHEMAS[sheet] + [c for c in OPTIONAL_SCHEMAS.get(sheet, []) if c in frame.columns]
+            frame = frame.loc[:, selected].copy()
             for column in frame.columns:
                 frame[column] = frame[column].map(clean)
             frame = frame.loc[frame.ne("").any(axis=1)]
@@ -103,6 +111,8 @@ def load_book(path):
                 for col in frame.columns:
                     value = row[col]
                     if not value and col != "Дата снятия":
+                        if col in OPTIONAL_COLUMNS:
+                            continue
                         error(prefix + f"не заполнено поле «{col}».")
                         continue
                     if not value:
