@@ -1,3 +1,4 @@
+from PySide6.QtWidgets import QDialog, QVBoxLayout, QPlainTextEdit
 """Дополнительная таблица CatBoost поверх существующего окна поиска."""
 import importlib
 import json
@@ -120,6 +121,10 @@ class CandidateSearchDialog(BaseDialog):
         self._cb_load = QPushButton("Выбрать модель .cbm…")
         self._cb_run = QPushButton("Рассчитать оценки")
         self._cb_save = QPushButton("Сохранить результат CatBoost…")
+        self._cb_train = QPushButton("Обучить CatBoost…")
+        self._cb_train.clicked.connect(self._train_model)
+        self._cb_qwen = QPushButton("Сформировать заключение Qwen")
+        self._cb_qwen.clicked.connect(self._generate_qwen)
         self._cb_save.setEnabled(False)
         self._cb_low, self._cb_high = QDoubleSpinBox(), QDoubleSpinBox()
         for spin, value in ((self._cb_low, .20), (self._cb_high, .70)):
@@ -369,3 +374,75 @@ class CandidateSearchDialog(BaseDialog):
         finally:
             if temp and os.path.exists(temp):
                 os.unlink(temp)
+
+
+# --- Added active-window handlers (the class is imported by manual_candidates_ui.py) ---
+def _fixed_train_model(self):
+    paths, _ = QFileDialog.getOpenFileNames(
+        self, "Выберите Excel-файлы для обучения CatBoost", "", "Excel (*.xlsx *.xls)")
+    if not paths:
+        return
+    directory = QFileDialog.getExistingDirectory(
+        self, "Папка для сохранения новой модели CatBoost")
+    if not directory:
+        return
+    try:
+        from catboost_training import train_and_save
+        self._cb_train.setEnabled(False)
+        self._cb_status.setText("CatBoost обучается. Это может занять некоторое время…")
+        # Обучение выполняется через тот же официальный модуль, что и отдельная панель CatBoost.
+        result = train_and_save(paths, directory, allow_unvalidated=True, iterations=300)
+        model_path = result.get("model_path", "") if isinstance(result, dict) else ""
+        self._cb_status.setText("Модель CatBoost обучена и сохранена: " + str(model_path))
+        QMessageBox.information(self, "CatBoost обучен",
+            "Новая модель сохранена.\n\n" + str(model_path) +
+            "\n\nРядом сохранены catboost_model.json и training_report.json.")
+    except Exception as exc:
+        self._cb_status.setText("Обучение CatBoost не выполнено.")
+        QMessageBox.warning(self, "Ошибка обучения CatBoost", str(exc))
+    finally:
+        self._cb_train.setEnabled(True)
+
+
+def _fixed_generate_qwen(self):
+    if getattr(self, "result", None) is None:
+        QMessageBox.information(self, "Qwen", "Сначала дождитесь завершения общего поиска.")
+        return
+    index = self.table.currentIndex()
+    if not index.isValid():
+        QMessageBox.information(self, "Qwen", "Выберите кандидата в таблице.")
+        return
+    try:
+        import pandas as pd
+        from llm_advisor import generate_conclusion
+        row = self.result["features"].iloc[index.row()]
+        states = self.result.get("states", pd.DataFrame()).to_dict("records")
+        evidence = {}
+        for group, payload in self.result.get("raw", {}).items():
+            details = payload.get("details") if isinstance(payload, dict) else None
+            if isinstance(details, dict):
+                candidate = str(row.get("candidate_inn", ""))
+                evidence[group] = details.get(candidate, pd.DataFrame())
+            elif isinstance(details, pd.DataFrame):
+                evidence[group] = details
+        text = generate_conclusion(
+            str(row.get("source_inn", getattr(self, "source_inn", ""))),
+            str(row.get("candidate_inn", "")), row.to_dict(),
+            self.result.get("warnings", []), states, evidence)
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Заключение Qwen")
+        dialog.resize(900, 650)
+        box = QVBoxLayout(dialog)
+        editor = QPlainTextEdit(); editor.setReadOnly(True); editor.setPlainText(text)
+        box.addWidget(editor)
+        close = QPushButton("Закрыть"); close.clicked.connect(dialog.accept); box.addWidget(close)
+        dialog.exec()
+    except Exception as exc:
+        QMessageBox.warning(self, "Qwen", str(exc))
+
+
+try:
+    CandidateSearchDialog._train_model = _fixed_train_model
+    CandidateSearchDialog._generate_qwen = _fixed_generate_qwen
+except NameError:
+    pass

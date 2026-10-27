@@ -11,6 +11,17 @@ from manual_candidates_ui import CandidateSearchDialog
 # action-column-only-v1
 from catboost_action_column_only import attach_action_column
 CandidateSearchDialog = attach_action_column(CandidateSearchDialog)
+# Activate the modules that convert founders/directors to evidence tabs and arrange actions.
+try:
+    from candidate_role_tabs import install as _install_role_tabs
+    CandidateSearchDialog = _install_role_tabs(CandidateSearchDialog)
+except Exception:
+    pass
+try:
+    from candidate_layout_cleanup import install as _install_layout_cleanup
+    CandidateSearchDialog = _install_layout_cleanup(CandidateSearchDialog)
+except Exception:
+    pass
 
 from core import load_book, valid_inn
 from kkt_search import open_kkt_dialog

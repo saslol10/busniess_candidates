@@ -3,6 +3,7 @@
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QPushButton, QLabel
 
+# Не добавляйте «Обучить CatBoost…» в HIDE_BUTTONS: кнопка должна быть видимой.
 HIDE_BUTTONS = ("Загрузить модель CatBoost", "Модель по умолчанию", "Выгрузить для разметки")
 HIDE_LABELS = ("CatBoost не применён: модель не загружена",)
 MANUAL_BUTTONS = ("Добавить организации для проверки", "Убрать ручные организации")
