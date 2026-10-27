@@ -15,7 +15,6 @@ CandidateSearchDialog = attach_action_column(CandidateSearchDialog)
 from core import load_book, valid_inn
 from kkt_search import open_kkt_dialog
 from staff import search_staff
-from roles_ui import open_role_search
 from trade_ui import TradeDialog
 
 
@@ -242,19 +241,6 @@ class Window(QMainWindow):
         self.staff_button.clicked.connect(self.find_staff)
         search_row.addWidget(self.staff_button)
 
-        # role-buttons-v1: отдельные кнопки вместо общей кнопки по учредителям/руководителям
-        self.founders_button = QPushButton("Поиск по учредителям")
-        self.founders_button.setToolTip("Учредители исходной организации среди учредителей, руководителей и сотрудников других организаций")
-        self.founders_button.setEnabled(False)
-        self.founders_button.clicked.connect(lambda: self.find_roles("founders"))
-        search_row.addWidget(self.founders_button)
-
-        self.directors_button = QPushButton("Поиск по руководителям")
-        self.directors_button.setToolTip("Руководители исходной организации среди учредителей, руководителей и сотрудников других организаций")
-        self.directors_button.setEnabled(False)
-        self.directors_button.clicked.connect(lambda: self.find_roles("directors"))
-        search_row.addWidget(self.directors_button)
-
         # separate-feature-windows-v1
         self.suppliers_button = QPushButton("Поставщики…")
         self.suppliers_button.setToolTip("Отдельное окно: общие поставщики и основания совпадений")
@@ -337,8 +323,6 @@ class Window(QMainWindow):
     def finished(self):
         self.open.setEnabled(True)
         self.staff_button.setEnabled("Сотрудники" in self.frames)
-        self.founders_button.setEnabled("Организации" in self.frames)
-        self.directors_button.setEnabled("Организации" in self.frames)
         self.candidates_button.setEnabled(bool(self.frames))
 
     def failed(self, message):
@@ -416,12 +400,6 @@ class Window(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Поиск по сотрудникам", str(exc))
 
-    def find_roles(self, mode):
-        if not self.frames:
-            QMessageBox.information(self, "Нет данных", "Сначала загрузите Excel.")
-            return
-        open_role_search(self, self.frames, self.inn.text().strip(), mode)
-
     def closeEvent(self, event):
         if self.loader and self.loader.isRunning():
             QMessageBox.information(self, "Загрузка", "Дождитесь завершения чтения файла перед закрытием.")
@@ -429,14 +407,6 @@ class Window(QMainWindow):
         else:
             event.accept()
 
-
-# CANDIDATE_LAYOUT_CLEANUP_V1
-import candidate_layout_cleanup as _clc
-_clc.install(CandidateSearchDialog)
-
-# candidate-role-tabs-v1
-import candidate_role_tabs as _crt
-_crt.install(CandidateSearchDialog)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

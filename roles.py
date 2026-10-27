@@ -1,9 +1,8 @@
-"""Двусторонний поиск кандидатов по учредителям и руководителям.
+"""Поиск кандидатов по учредителям и по руководителям исходной организации.
 
-founders: учредитель хотя бы на одной стороне связи.
-directors: руководитель хотя бы на одной стороне связи.
-На другой стороне допускаются учредитель, руководитель или сотрудник.
-Совпадение определяется по ИНН физлица, а не по ФИО.
+Лица исходной организации (учредители ИЛИ руководители) ищутся в других
+организациях среди учредителей, руководителей и сотрудников. Совпадение
+определяется только по ИНН физлица; совпадение одного ФИО не учитывается.
 Модуль не меняет признаки CatBoost и контекст Qwen.
 """
 import pandas as pd
@@ -34,18 +33,17 @@ def role_records(frames):
             for role, fio_col, inn_col in ((FOUNDER, "ФИО учредителя", "ИНН учредителя"),
                                            (DIRECTOR, "ФИО руководителя", "ИНН руководителя")):
                 p = clean(r.get(inn_col, ""))
-                if o and p:
+                if p:
                     rows.append({"org": o, "person": p, "fio": clean(r.get(fio_col, "")), "role": role, "period": ""})
     staff = frames.get("Сотрудники")
     if staff is not None and not staff.empty and "ИНН сотрудника" in staff.columns:
-        s = staff.assign(_p=staff["ИНН сотрудника"].map(clean),
-                         _o=staff["ИНН организации"].map(clean))
-        s = s[(s["_p"] != "") & (s["_o"] != "")]
-        for (o, p), g in s.groupby(["_o", "_p"]):
+        s = staff.assign(_p=staff["ИНН сотрудника"].map(clean))
+        s = s[s["_p"] != ""]
+        for (o, p), g in s.groupby(["ИНН организации", "_p"]):
             nums = sorted(n for n in g["Месяц"].map(month_number) if n is not None)
             fio = next((clean(x) for x in g.get("ФИО сотрудника", []) if clean(x)), "")
             period = f"{month_label(nums[0])} – {month_label(nums[-1])}" if nums else ""
-            rows.append({"org": o, "person": p, "fio": fio, "role": STAFF, "period": period})
+            rows.append({"org": clean(o), "person": p, "fio": fio, "role": STAFF, "period": period})
     frame = pd.DataFrame(rows, columns=["org", "person", "fio", "role", "period"]).drop_duplicates()
     return frame, names
 
@@ -58,45 +56,27 @@ def search_roles(frames, source_inn, mode):
         raise ValueError("Введите корректный 10-значный ИНН исходной организации.")
     if frames.get("Организации") is None:
         raise ValueError("В файле нет листа «Организации» с учредителями и руководителями.")
-
     role = MODES[mode]
     rec, names = role_records(frames)
-    # Не отбираем только выбранную роль и не удаляем другие роли человека.
-    # Иначе теряются обратные связи и отдельные основания.
-    source = rec[rec["org"] == src]
-    source_persons = source.loc[source["role"] == role, "person"].nunique()
-    empty = {"ranking": pd.DataFrame(columns=RANK_COLS),
-             "details": pd.DataFrame(columns=DETAIL_COLS),
-             "source_persons": int(source_persons), "mode": mode}
+    source = rec[(rec["org"] == src) & (rec["role"] == role)].drop_duplicates("person")
+    empty = {"ranking": pd.DataFrame(columns=RANK_COLS), "details": pd.DataFrame(columns=DETAIL_COLS),
+             "source_persons": len(source), "mode": mode}
     if source.empty:
-        return {**empty, "message": f"У организации {src} не найдены учредители, руководители или сотрудники с ИНН физлица."}
-
+        return {**empty, "message": f"У организации {src} в листе «Организации» не указан {role} с ИНН."}
     other = rec[(rec["org"] != src) & rec["person"].isin(source["person"])]
-    pairs = source.merge(other, on="person", suffixes=("_source", "_candidate"))
-    # Выбранная роль должна присутствовать хотя бы на одной стороне.
-    pairs = pairs[(pairs["role_source"] == role) | (pairs["role_candidate"] == role)]
     details = []
-    for _, pair in pairs.iterrows():
-        source_role, candidate_role = pair["role_source"], pair["role_candidate"]
-        periods = []
-        if source_role == STAFF and pair["period_source"]:
-            periods.append("Исходная организация: " + pair["period_source"])
-        if candidate_role == STAFF and pair["period_candidate"]:
-            periods.append("Кандидат: " + pair["period_candidate"])
-        details.append({
-            "ИНН кандидата": pair["org_candidate"],
-            "Наименование кандидата": names.get(pair["org_candidate"], ""),
-            "ИНН физлица": pair["person"],
-            "ФИО": pair["fio_source"] or pair["fio_candidate"],
-            "Роль в исходной организации": source_role,
-            "Роль в организации-кандидате": candidate_role,
-            "Период (для сотрудников)": "; ".join(periods),
-            "Основание": f"{source_role.capitalize()} исходной организации является {_INSTR[candidate_role]} кандидата",
-        })
+    for _, s in source.iterrows():
+        for _, c in other[other["person"] == s["person"]].iterrows():
+            details.append({
+                "ИНН кандидата": c["org"], "Наименование кандидата": names.get(c["org"], ""),
+                "ИНН физлица": s["person"], "ФИО": s["fio"] or c["fio"],
+                "Роль в исходной организации": role, "Роль в организации-кандидате": c["role"],
+                "Период (для сотрудников)": c["period"],
+                "Основание": f"{role.capitalize()} исходной организации является {_INSTR[c['role']]} кандидата",
+            })
     det = pd.DataFrame(details, columns=DETAIL_COLS).drop_duplicates()
     if det.empty:
-        return {**empty, "message": f"Совпадения по ИНН физлица с ролью «{role}» хотя бы в одной из организаций не найдены."}
-
+        return {**empty, "message": f"Лица с ролью «{role}» ({len(source)}) не найдены в других организациях."}
     rank = (det.groupby("ИНН кандидата")
             .agg(**{"Наименование кандидата": ("Наименование кандидата", "first"),
                     "Совпавших лиц": ("ИНН физлица", "nunique"),
@@ -105,9 +85,7 @@ def search_roles(frames, source_inn, mode):
             .reset_index()
             .sort_values(["Совпавших лиц", "Оснований", "ИНН кандидата"], ascending=[False, False, True]))
     rank.insert(0, "Место", range(1, len(rank) + 1))
-    det = det.sort_values(["ИНН кандидата", "ИНН физлица", "Роль в исходной организации",
-                           "Роль в организации-кандидате"]).reset_index(drop=True)
+    det = det.sort_values(["ИНН кандидата", "ИНН физлица", "Роль в организации-кандидате"]).reset_index(drop=True)
     return {"ranking": rank.loc[:, RANK_COLS].reset_index(drop=True), "details": det,
-            "source_persons": int(source_persons), "mode": mode,
-            "message": (f"Лиц с ролью «{role}» в исходной организации: {source_persons}. "
-                        f"Поиск выполнен в обе стороны. Кандидатов: {len(rank)}. Оснований: {len(det)}.")}
+            "source_persons": len(source), "mode": mode,
+            "message": f"Лиц с ролью «{role}» в исходной организации: {len(source)}. Кандидатов: {len(rank)}."}

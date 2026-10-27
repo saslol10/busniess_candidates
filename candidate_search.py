@@ -6,13 +6,13 @@ from core import valid_inn
 from staff import search_staff
 from trade import find_trade_candidates
 from kkt_search import search_kkt
+from roles import search_roles
 from candidate_features import build_candidate_features
-from roles import search_roles, role_records, MODES as ROLE_MODES
 
 DIRECTIONS = {"staff": "Сотрудники", "suppliers": "Поставщики", "buyers": "Покупатели", "kkt": "ККТ"}
+ROLE_DIRECTIONS = {"founders": "Поиск по учредителям", "directors": "Поиск по руководителям"}
 DEPENDENCIES = {"staff": ("Сотрудники",), "suppliers": ("Покупки", "Продажи"),
                 "buyers": ("Продажи", "Покупки"), "kkt": ("ККТ",)}
-ROLE_DIRECTIONS = {"founders": "Учредители", "directors": "Руководители"}
 SOURCE_SHEETS = {"staff": "Сотрудники", "suppliers": "Покупки", "buyers": "Продажи", "kkt": "ККТ"}
 
 
@@ -73,44 +73,29 @@ def run_candidate_search(frames, source_inn, progress=None):
             state, message = "error", f"{type(exc).__name__}: {exc}"
         states.append({"Направление": title, "Код": group, "Статус": state,
                        "Кандидатов": count, "Сообщение": message})
-    # Учредители и руководители: тот же search_roles, что и во вкладках карточки,
-    # поэтому основания во вкладках, CatBoost и Qwen совпадают.
-    records = None
+    # Роли выполняются раздельно: учредители и руководители — два независимых
+    # направления, два набора оснований и два набора признаков CatBoost.
     for group, title in ROLE_DIRECTIONS.items():
         if progress:
             progress(title)
         state, message, count = "no_data", "", None
-        rankings[group] = None
         try:
-            org = frames.get("Организации")
-            if org is None or org.empty:
+            if "Организации" not in frames or frames["Организации"] is None or frames["Организации"].empty:
                 message = "Отсутствует или пуст лист «Организации»."
             else:
-                if records is None:
-                    records, _ = role_records(frames)
-                role = ROLE_MODES[group]
-                if not records["role"].eq(role).any():
-                    message = f"В листе «Организации» нет ИНН физлиц с ролью «{role}»; направление не проверялось."
-                elif not records["org"].eq(source_inn).any():
-                    message = "У исходной организации нет учредителей, руководителей или сотрудников с ИНН физлица."
-                else:
-                    result = search_roles(frames, source_inn, group)
-                    raw[group] = result
-                    ranking = result["ranking"]
-                    build_candidate_features(source_inn, **{group: ranking})
-                    rankings[group] = ranking
-                    state, count = "completed", len(ranking)
-                    message = "Проверено; совпадений нет." if ranking.empty else "Проверено; кандидаты найдены."
+                result = search_roles(frames, source_inn, group)
+                raw[group] = result
+                warnings.extend(title + ": " + str(note) for note in result.get("warnings", []))
+                ranking = result["ranking"]
+                rankings[group] = ranking
+                state, count = "completed", len(ranking)
+                message = result.get("message", "Проверено; совпадений нет." if ranking.empty else "Проверено; кандидаты найдены.")
         except Exception as exc:
             rankings[group] = None
             state, message = "error", f"{type(exc).__name__}: {exc}"
         states.append({"Направление": title, "Код": group, "Статус": state,
                        "Кандидатов": count, "Сообщение": message})
-    staff_sheet = frames.get("Сотрудники")
-    if (any(rankings[g] is not None for g in ROLE_DIRECTIONS) and staff_sheet is not None
-            and not staff_sheet.empty and "ИНН сотрудника" not in staff_sheet.columns):
-        warnings.append("Учредители/руководители: в листе «Сотрудники» нет столбца «ИНН сотрудника»; "
-                        "связи «роль ↔ сотрудник» не проверялись.")
+
     features = build_candidate_features(source_inn, **rankings)
     metadata["finished_utc"] = datetime.now(timezone.utc).isoformat()
     return {"features": features, "states": pd.DataFrame(states), "raw": raw,

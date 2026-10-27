@@ -1,4 +1,4 @@
-"""Объединение рассчитанных признаков."""
+"""Объединение рассчитанных признаков. Здесь нет обученной модели и рейтинга."""
 from __future__ import annotations
 import math
 import re
@@ -32,20 +32,15 @@ SPECS = {
         ("kkt_common_count", "Общие ККТ", "count"),
         ("kkt_source_share_pct", "Доля совпадения, %", "percent"),
     ],
-}
-# Ролевые направления (учредители/руководители). Отдельно от SPECS, чтобы схема v1
-# и ранее обученные модели CatBoost оставались неизменными.
-ROLE_SPECS = {
     "founders": [
-        ("founders_common_persons", "Совпавших лиц", "count"),
+        ("founders_common_count", "Совпавших лиц", "count"),
         ("founders_basis_count", "Оснований", "count"),
     ],
     "directors": [
-        ("directors_common_persons", "Совпавших лиц", "count"),
+        ("directors_common_count", "Совпавших лиц", "count"),
         ("directors_basis_count", "Оснований", "count"),
     ],
 }
-ALL_SPECS = {**SPECS, **ROLE_SPECS}
 ID_COL = "ИНН кандидата"
 FEATURE_COLUMNS = [
     column
@@ -53,18 +48,24 @@ FEATURE_COLUMNS = [
     for column in [group + "_search_completed", group + "_candidate_found"]
         + [item[0] for item in specs]
 ]
-ROLE_FEATURE_COLUMNS = [
-    column
-    for group, specs in ROLE_SPECS.items()
-    for column in [group + "_search_completed", group + "_candidate_found"]
-        + [item[0] for item in specs]
-]
-# FEATURE_COLUMNS — схема v1 (4 направления), ALL_FEATURE_COLUMNS — схема v2 (+ роли).
-ALL_FEATURE_COLUMNS = FEATURE_COLUMNS + ROLE_FEATURE_COLUMNS
+ROLE_SPECS = {
+    "founders": SPECS["founders"],
+    "directors": SPECS["directors"],
+}
+
+ROLE_FEATURE_COLUMNS = []
+for _group, _specs in ROLE_SPECS.items():
+    ROLE_FEATURE_COLUMNS.extend([f"{_group}_search_completed", f"{_group}_candidate_found"])
+    ROLE_FEATURE_COLUMNS.extend(_spec[0] for _spec in _specs)
+
+# Все поля, включая учредителей и руководителей, уже входят в SPECS.
+ALL_FEATURE_COLUMNS = list(FEATURE_COLUMNS)
+ALL_SPECS = dict(SPECS)
 OUTPUT_COLUMNS = ["source_inn", "candidate_inn"] + ALL_FEATURE_COLUMNS
 
-
 def _inn(value, context):
+    # Контрольная сумма уже проверяется входными модулями приложения.
+    # Здесь запрещаем числа: потерянные начальные нули восстановить нельзя.
     if not isinstance(value, str):
         raise ValueError(f"{context}: ИНН должен быть текстом, а не числом")
     value = value.strip()
@@ -96,9 +97,10 @@ def _prepare(frame, group, source_inn):
         raise TypeError(f"{group}: ожидается pandas.DataFrame либо None")
     if not frame.columns.is_unique:
         raise ValueError(f"{group}: повторяющиеся заголовки столбцов")
+    # Существующий trade.py возвращает пустую таблицу без колонок.
     if frame.empty:
         return {}
-    required = [ID_COL] + [item[1] for item in ALL_SPECS[group]]
+    required = [ID_COL] + [item[1] for item in SPECS[group]]
     missing = [name for name in required if name not in frame.columns]
     if missing:
         raise ValueError(f"{group}: отсутствуют столбцы: {', '.join(missing)}")
@@ -111,7 +113,7 @@ def _prepare(frame, group, source_inn):
             raise ValueError(f"{group}: кандидат {candidate} встречается несколько раз")
         result[candidate] = {
             feature: _number(row[column], kind, f"{group}, {candidate}, {column}")
-            for feature, column, kind in ALL_SPECS[group]
+            for feature, column, kind in SPECS[group]
         }
     return result
 
@@ -126,7 +128,7 @@ def build_candidate_features(
     founders: Optional[pd.DataFrame] = None,
     directors: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
-    """Объединить полные результаты четырёх поисков без вычисления рейтинга.
+    """Объединить полные результаты шести поисков без вычисления рейтинга.
 
     None: поиск по направлению не выполнен, завершился ошибкой или нет данных.
     Пустой DataFrame: поиск успешно выполнен, совпадений не найдено.
@@ -154,7 +156,7 @@ def build_candidate_features(
             found = completed and candidate in rows
             row[group + "_search_completed"] = int(completed)
             row[group + "_candidate_found"] = int(found) if completed else float("nan")
-            for feature, _, _ in ALL_SPECS[group]:
+            for feature, _, _ in SPECS[group]:
                 row[feature] = (
                     rows[candidate][feature] if found
                     else 0 if completed

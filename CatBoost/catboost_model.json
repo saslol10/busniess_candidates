@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "model_version": "20261025T115701Z_94bb2301",
+  "schema_version": 2,
+  "model_version": "20261027T190629Z_5ca90a3f",
   "features": [
     "staff_search_completed",
     "staff_candidate_found",
@@ -25,10 +25,18 @@
     "kkt_search_completed",
     "kkt_candidate_found",
     "kkt_common_count",
-    "kkt_source_share_pct"
+    "kkt_source_share_pct",
+    "founders_search_completed",
+    "founders_candidate_found",
+    "founders_common_count",
+    "founders_basis_count",
+    "directors_search_completed",
+    "directors_candidate_found",
+    "directors_common_count",
+    "directors_basis_count"
   ],
   "positive_label": 1,
-  "model_sha256": "4fe44c4fd2e558ae4b4ef51f82a47ad4c4bde51d4e3401c25a9cae4d939f752b",
+  "model_sha256": "74ce5947467b316e9db6a9577c4dc7f7c28a8139793261d1d734ef0f47d03f79",
   "catboost_version": "1.2.10",
   "validation_status": "held_out_test",
   "calibrated": false
