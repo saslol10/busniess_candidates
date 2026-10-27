@@ -58,11 +58,11 @@ def search_roles(frames, source_inn, mode):
         raise ValueError("В файле нет листа «Организации» с учредителями и руководителями.")
     role = MODES[mode]
     rec, names = role_records(frames)
-    source = rec[(rec["org"] == src) & (rec["role"] == role)].drop_duplicates("person")
+    source = rec[rec["org"] == src].drop_duplicates(["person", "role"])
     empty = {"ranking": pd.DataFrame(columns=RANK_COLS), "details": pd.DataFrame(columns=DETAIL_COLS),
              "source_persons": len(source), "mode": mode}
     if source.empty:
-        return {**empty, "message": f"У организации {src} в листе «Организации» не указан {role} с ИНН."}
+        return {**empty, "message": f"У организации {src} в загруженных данных не указаны лица с ИНН."}
     other = rec[(rec["org"] != src) & rec["person"].isin(source["person"])]
     details = []
     for _, s in source.iterrows():
@@ -88,4 +88,4 @@ def search_roles(frames, source_inn, mode):
     det = det.sort_values(["ИНН кандидата", "ИНН физлица", "Роль в организации-кандидате"]).reset_index(drop=True)
     return {"ranking": rank.loc[:, RANK_COLS].reset_index(drop=True), "details": det,
             "source_persons": len(source), "mode": mode,
-            "message": f"Лиц с ролью «{role}» в исходной организации: {len(source)}. Кандидатов: {len(rank)}."}
+            "message": f"Лиц исходной организации: {len(source)}. Кандидатов: {len(rank)}."}
