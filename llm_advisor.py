@@ -114,6 +114,13 @@ def build_prompt(source_inn, candidate_inn, candidate_row, warnings,
             "- ККТ: общих — {0}; доля ККТ исходной организации — {1}%.".format(
                 _value(candidate_row, "kkt_common_count"),
                 _value(candidate_row, "kkt_source_share_pct")))
+    for group, title in (("founders", "Учредители"), ("directors", "Руководители")):
+        if _value(candidate_row, group + "_candidate_found", 0) == 1:
+            channels.append(
+                "- {0}: совпавших физлиц — {1}; оснований — {2} (совпадение по ИНН физлица, "
+                "роль хотя бы на одной стороне связи).".format(
+                    title, _value(candidate_row, group + "_common_persons"),
+                    _value(candidate_row, group + "_basis_count")))
     channels_text = "\n".join(channels) if channels else "- Совпадений среди успешно проверенных направлений не найдено."
     warning_text = "\n".join(f"- {item}" for item in (warnings or [])) or "- Отдельные ограничения не переданы."
 

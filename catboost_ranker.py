@@ -4,9 +4,11 @@ import hashlib
 import json
 import numpy as np
 import pandas as pd
-from candidate_features import FEATURE_COLUMNS, SPECS
+from candidate_features import FEATURE_COLUMNS, SPECS, ALL_FEATURE_COLUMNS, ALL_SPECS
 
-SCHEMA_VERSION = 1
+# v1 — 4 направления (старые модели), v2 — плюс учредители и руководители.
+SCHEMA_VERSION = 2
+SCHEMA_FEATURES = {1: list(FEATURE_COLUMNS), 2: list(ALL_FEATURE_COLUMNS)}
 ROOT = Path(__file__).resolve().parent
 DEFAULT_MODEL = ROOT / "models" / "catboost_model.cbm"
 LABEL = "Метка_целевая (1/0)"
@@ -22,19 +24,23 @@ def digest(path):
     return h.hexdigest()
 
 
-def prepare_features(frame):
+def prepare_features(frame, columns=None):
+    """Проверка и приведение признаков. columns: список схемы (по умолчанию v1)."""
+    columns = list(columns or FEATURE_COLUMNS)
     if not frame.columns.is_unique:
         raise ValueError("Названия столбцов не должны повторяться.")
-    missing = [c for c in FEATURE_COLUMNS if c not in frame.columns]
+    missing = [c for c in columns if c not in frame.columns]
     if missing:
         raise ValueError("Не хватает признаков: " + ", ".join(missing))
-    x = frame.loc[:, FEATURE_COLUMNS].copy()
-    for c in FEATURE_COLUMNS:
+    x = frame.loc[:, columns].copy()
+    for c in columns:
         x[c] = pd.to_numeric(x[c], errors="raise").astype(float)
         if np.isinf(x[c]).any() or (x[c].dropna() < 0).any():
             raise ValueError("Недопустимые значения признака " + c)
-    for group, specs in SPECS.items():
+    for group, specs in ALL_SPECS.items():
         done, found = group + "_search_completed", group + "_candidate_found"
+        if done not in columns:
+            continue
         if x[done].isna().any() or not x[done].isin([0, 1]).all():
             raise ValueError(done + ": допустимы только 0 и 1.")
         absent = x[done].eq(0)
@@ -72,7 +78,8 @@ def score_candidates(frame, model_path=None):
             if not manifest_path.is_file():
                 raise ValueError("Рядом с .cbm необходим файл " + manifest_path.name)
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if manifest.get("schema_version") != SCHEMA_VERSION or manifest.get("features") != list(FEATURE_COLUMNS):
+            columns = SCHEMA_FEATURES.get(manifest.get("schema_version"))
+            if columns is None or manifest.get("features") != columns:
                 raise ValueError("Модель и приложение используют разные схемы признаков.")
             if manifest.get("positive_label") != 1 or manifest.get("model_sha256") != digest(path):
                 raise ValueError("Модель не соответствует манифесту (класс или контрольная сумма).")
@@ -82,9 +89,9 @@ def score_candidates(frame, model_path=None):
             from catboost import CatBoostClassifier, __version__
             model = CatBoostClassifier()
             model.load_model(str(path))
-            if model.feature_names_ != list(FEATURE_COLUMNS) or list(model.classes_) != [0, 1]:
+            if model.feature_names_ != columns or list(model.classes_) != [0, 1]:
                 raise ValueError("Несовместимые признаки или классы внутри файла модели.")
-            x = prepare_features(out)
+            x = prepare_features(out, columns)
             out["catboost_score"] = model.predict_proba(x)[:, 1]
             if not np.isfinite(out["catboost_score"]).all():
                 raise ValueError("Модель вернула некорректные оценки.")
@@ -94,7 +101,8 @@ def score_candidates(frame, model_path=None):
             info.update(applied=True, version=manifest["model_version"],
                         mode="CatBoost · " + (
                             "отложенный тест выполнен" if validation == "held_out_test" else "ЭКСПЕРИМЕНТ: без независимой проверки"),
-                        model_sha256=manifest["model_sha256"], validation_status=validation)
+                        model_sha256=manifest["model_sha256"], validation_status=validation,
+                        schema_version=manifest["schema_version"])
             if manifest.get("catboost_version") != __version__:
                 info[
                     "warning"] = "Версия библиотеки CatBoost отличается от версии при обучении; проверьте совместимость."
@@ -120,7 +128,8 @@ def export_labeling(frame, target, metadata=None):
     from openpyxl import load_workbook
     from openpyxl.worksheet.datavalidation import DataValidation
     target = Path(target)
-    data = frame.loc[:, ["source_inn", "candidate_inn"] + list(FEATURE_COLUMNS)].copy()
+    columns = ALL_FEATURE_COLUMNS if all(c in frame.columns for c in ALL_FEATURE_COLUMNS) else FEATURE_COLUMNS
+    data = frame.loc[:, ["source_inn", "candidate_inn"] + list(columns)].copy()
     meta = metadata or {}
     for c, value in {"analysis_id": meta.get("analysis_id", ""), "period_start": "", "period_end": "",
                      "data_version": "", LABEL: "", "expert_comment": "", "checked_at": ""}.items():

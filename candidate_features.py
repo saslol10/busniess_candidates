@@ -33,6 +33,19 @@ SPECS = {
         ("kkt_source_share_pct", "Доля совпадения, %", "percent"),
     ],
 }
+# Ролевые направления (учредители/руководители). Отдельно от SPECS, чтобы схема v1
+# и ранее обученные модели CatBoost оставались неизменными.
+ROLE_SPECS = {
+    "founders": [
+        ("founders_common_persons", "Совпавших лиц", "count"),
+        ("founders_basis_count", "Оснований", "count"),
+    ],
+    "directors": [
+        ("directors_common_persons", "Совпавших лиц", "count"),
+        ("directors_basis_count", "Оснований", "count"),
+    ],
+}
+ALL_SPECS = {**SPECS, **ROLE_SPECS}
 ID_COL = "ИНН кандидата"
 FEATURE_COLUMNS = [
     column
@@ -40,7 +53,15 @@ FEATURE_COLUMNS = [
     for column in [group + "_search_completed", group + "_candidate_found"]
         + [item[0] for item in specs]
 ]
-OUTPUT_COLUMNS = ["source_inn", "candidate_inn"] + FEATURE_COLUMNS
+ROLE_FEATURE_COLUMNS = [
+    column
+    for group, specs in ROLE_SPECS.items()
+    for column in [group + "_search_completed", group + "_candidate_found"]
+        + [item[0] for item in specs]
+]
+# FEATURE_COLUMNS — схема v1 (4 направления), ALL_FEATURE_COLUMNS — схема v2 (+ роли).
+ALL_FEATURE_COLUMNS = FEATURE_COLUMNS + ROLE_FEATURE_COLUMNS
+OUTPUT_COLUMNS = ["source_inn", "candidate_inn"] + ALL_FEATURE_COLUMNS
 
 
 def _inn(value, context):
@@ -77,7 +98,7 @@ def _prepare(frame, group, source_inn):
         raise ValueError(f"{group}: повторяющиеся заголовки столбцов")
     if frame.empty:
         return {}
-    required = [ID_COL] + [item[1] for item in SPECS[group]]
+    required = [ID_COL] + [item[1] for item in ALL_SPECS[group]]
     missing = [name for name in required if name not in frame.columns]
     if missing:
         raise ValueError(f"{group}: отсутствуют столбцы: {', '.join(missing)}")
@@ -90,7 +111,7 @@ def _prepare(frame, group, source_inn):
             raise ValueError(f"{group}: кандидат {candidate} встречается несколько раз")
         result[candidate] = {
             feature: _number(row[column], kind, f"{group}, {candidate}, {column}")
-            for feature, column, kind in SPECS[group]
+            for feature, column, kind in ALL_SPECS[group]
         }
     return result
 
@@ -102,6 +123,8 @@ def build_candidate_features(
     suppliers: Optional[pd.DataFrame] = None,
     buyers: Optional[pd.DataFrame] = None,
     kkt: Optional[pd.DataFrame] = None,
+    founders: Optional[pd.DataFrame] = None,
+    directors: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """Объединить полные результаты четырёх поисков без вычисления рейтинга.
 
@@ -118,7 +141,8 @@ def build_candidate_features(
     prepared = {
         group: _prepare(frame, group, source_inn)
         for group, frame in dict(
-            staff=staff, suppliers=suppliers, buyers=buyers, kkt=kkt
+            staff=staff, suppliers=suppliers, buyers=buyers, kkt=kkt,
+            founders=founders, directors=directors
         ).items()
     }
     candidates = sorted(set().union(*(set(rows or {}) for rows in prepared.values())))
@@ -130,7 +154,7 @@ def build_candidate_features(
             found = completed and candidate in rows
             row[group + "_search_completed"] = int(completed)
             row[group + "_candidate_found"] = int(found) if completed else float("nan")
-            for feature, _, _ in SPECS[group]:
+            for feature, _, _ in ALL_SPECS[group]:
                 row[feature] = (
                     rows[candidate][feature] if found
                     else 0 if completed
@@ -138,6 +162,6 @@ def build_candidate_features(
                 )
         output.append(row)
     result = pd.DataFrame(output, columns=OUTPUT_COLUMNS)
-    for column in FEATURE_COLUMNS:
+    for column in ALL_FEATURE_COLUMNS:
         result[column] = pd.to_numeric(result[column], errors="raise").astype("float64")
     return result

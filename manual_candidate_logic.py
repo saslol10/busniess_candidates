@@ -2,7 +2,7 @@
 import copy
 import re
 import pandas as pd
-from candidate_features import SPECS, FEATURE_COLUMNS
+from candidate_features import ALL_SPECS as SPECS, ALL_FEATURE_COLUMNS as FEATURE_COLUMNS
 from catboost_ranker import score_candidates
 
 

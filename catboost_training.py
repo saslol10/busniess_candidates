@@ -9,7 +9,33 @@ import tempfile
 import numpy as np
 import pandas as pd
 from candidate_features import FEATURE_COLUMNS
-from catboost_ranker import SCHEMA_VERSION, LABEL, prepare_features, digest
+from catboost_ranker import SCHEMA_VERSION, SCHEMA_FEATURES, LABEL, prepare_features, digest
+
+ROLE_ONLY = [c for c in SCHEMA_FEATURES[2] if c not in SCHEMA_FEATURES[1]]
+
+
+def detect_schema(paths):
+    """1 — файлы без ролевых признаков, 2 — с ними. Смешивать нельзя."""
+    found = set()
+    for path in paths:
+        sheets = pd.read_excel(path, sheet_name=None, nrows=0)
+        cols = set()
+        for frame in sheets.values():
+            cols |= set(map(str, frame.columns))
+        has = [c in cols for c in ROLE_ONLY]
+        if any(has) and not all(has):
+            raise ValueError(f"{path}: неполный набор признаков учредителей/руководителей.")
+        found.add(2 if all(has) else 1)
+    if len(found) > 1:
+        raise ValueError("Смешаны файлы разметки старой схемы (без учредителей и руководителей) и новой. "
+                         "Пересчитайте старые случаи в приложении и выгрузите разметку заново: "
+                         "дополнять их нулями нельзя — это означало бы «проверено, совпадений нет».")
+    return found.pop() if found else 1
+
+
+def _use_schema(version):
+    global FEATURE_COLUMNS, SCHEMA_VERSION
+    FEATURE_COLUMNS, SCHEMA_VERSION = list(SCHEMA_FEATURES[version]), version
 
 
 def _date(value):
@@ -57,7 +83,7 @@ def read_labels(paths):
             frame[c] = frame[c].map(_date)
         if (frame["period_start"] > frame["period_end"]).any():
             raise ValueError("Начало периода позже окончания.")
-        numeric = prepare_features(frame)
+        numeric = prepare_features(frame, FEATURE_COLUMNS)
         for c in FEATURE_COLUMNS:
             frame[c] = numeric[c]
         parts.append(frame)
@@ -137,6 +163,8 @@ def ranking_metrics(data, scores):
 
 
 def train_and_save(paths, output_dir, allow_unvalidated=False, iterations=400, seed=42):
+    paths = list(paths)
+    _use_schema(detect_schema(paths))
     from catboost import CatBoostClassifier, __version__
     if iterations < 10 or iterations > 10000:
         raise ValueError("iterations: допустимо от 10 до 10000.")
