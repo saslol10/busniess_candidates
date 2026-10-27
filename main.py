@@ -15,7 +15,7 @@ CandidateSearchDialog = attach_action_column(CandidateSearchDialog)
 from core import load_book, valid_inn
 from kkt_search import open_kkt_dialog
 from staff import search_staff
-from org_roles import search_roles
+from roles_ui import open_role_search
 from trade_ui import TradeDialog
 
 
@@ -199,112 +199,6 @@ class StaffDialog(QDialog):
             QMessageBox.warning(self, "Не удалось сохранить", str(exc))
 
 
-
-class RoleDialog(QDialog):
-    def __init__(self, result, source, parent=None):
-        super().__init__(parent)
-        self.result = result
-        self.source = source
-        self.setWindowTitle("Учредители, руководители и сотрудники · ИНН " + source)
-        self.resize(1280, 760)
-        layout = QVBoxLayout(self)
-        self.summary = QLabel(result["summary"])
-        self.summary.setWordWrap(True)
-        layout.addWidget(self.summary)
-        if result["warnings"]:
-            notice = QLabel("\n".join(result["warnings"]))
-            notice.setWordWrap(True)
-            notice.setStyleSheet("background:#fff5dc;color:#614910;padding:12px;border-radius:6px")
-            layout.addWidget(notice)
-        actions = QHBoxLayout()
-        export = QPushButton("Сохранить рейтинг и основания в Excel…")
-        export.clicked.connect(self.export_result)
-        actions.addWidget(export)
-        actions.addStretch()
-        close = QPushButton("Закрыть")
-        close.clicked.connect(self.accept)
-        actions.addWidget(close)
-        layout.addLayout(actions)
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        self.ranking = QTableView()
-        self.ranking.setModel(FrameModel(result["ranking"], self.ranking))
-        self.ranking.setEditTriggers(QTableView.EditTrigger.NoEditTriggers)
-        self.ranking.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
-        self.ranking.setSelectionMode(QTableView.SelectionMode.SingleSelection)
-        self.ranking.setAlternatingRowColors(True)
-        self.ranking.horizontalHeader().setStretchLastSection(True)
-        self.ranking.selectionModel().currentRowChanged.connect(self.select_candidate)
-        splitter.addWidget(self.ranking)
-        detail_widget = QWidget()
-        detail_layout = QVBoxLayout(detail_widget)
-        self.detail_label = QLabel("Выберите строку кандидата, чтобы увидеть основания.")
-        self.detail_label.setWordWrap(True)
-        detail_layout.addWidget(self.detail_label)
-        self.details = QTableView()
-        self.details.setEditTriggers(QTableView.EditTrigger.NoEditTriggers)
-        self.details.setAlternatingRowColors(True)
-        detail_layout.addWidget(self.details)
-        splitter.addWidget(detail_widget)
-        splitter.setSizes([430, 230])
-        layout.addWidget(splitter, 1)
-        if self.ranking.model().rowCount():
-            self.ranking.selectRow(0)
-
-    def select_candidate(self, current, previous):
-        if not current.isValid():
-            return
-        inn = str(self.result["ranking"].iloc[current.row()]["ИНН кандидата"])
-        name = str(self.result["ranking"].iloc[current.row()]["Наименование кандидата"])
-        self.detail_label.setText("Кандидат " + inn + " · " + name + " · основания совпадений")
-        self.details.setModel(FrameModel(self.result["details"].get(inn, self.result["empty_details"]), self.details))
-        self.details.resizeColumnsToContents()
-        for c in range(self.details.model().columnCount()):
-            self.details.setColumnWidth(c, min(420, max(150, self.details.columnWidth(c))))
-
-    def export_result(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Сохранить результат", "role_candidates.xlsx",
-                                              "Книга Excel (*.xlsx)")
-        if not path:
-            return
-        if not path.lower().endswith(".xlsx"):
-            path += ".xlsx"
-        try:
-            import os, tempfile
-            import pandas as pd
-            from openpyxl import load_workbook
-            target = Path(path)
-            fd, temp = tempfile.mkstemp(suffix=".xlsx", dir=target.parent)
-            os.close(fd)
-            try:
-                with pd.ExcelWriter(temp, engine="openpyxl") as writer:
-                    self.result["ranking"].to_excel(writer, sheet_name="Кандидаты", index=False)
-                    frames = []
-                    for inn, frame in self.result["details"].items():
-                        f = frame.copy()
-                        f.insert(0, "ИНН кандидата", inn)
-                        frames.append(f)
-                    if frames:
-                        pd.concat(frames, ignore_index=True).to_excel(writer, sheet_name="Основания", index=False)
-                    pd.DataFrame({"Методика": self.result["warnings"] or ["Совпадения рассчитаны по ИНН физических лиц."]}).to_excel(
-                        writer, sheet_name="Методика", index=False)
-                book = load_workbook(temp)
-                for sheet in book:
-                    sheet.freeze_panes = "A2"
-                    sheet.auto_filter.ref = sheet.dimensions
-                    for row in sheet:
-                        for cell in row:
-                            if isinstance(cell.value, str):
-                                cell.data_type = "s"
-                book.save(temp)
-                os.replace(temp, target)
-            finally:
-                if os.path.exists(temp):
-                    os.unlink(temp)
-            QMessageBox.information(self, "Готово", "Рейтинг и основания сохранены.")
-        except Exception as exc:
-            QMessageBox.warning(self, "Не удалось сохранить", str(exc))
-
-
 class Window(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -348,11 +242,18 @@ class Window(QMainWindow):
         self.staff_button.clicked.connect(self.find_staff)
         search_row.addWidget(self.staff_button)
 
-        self.roles_button = QPushButton("Учредители и руководители…")
-        self.roles_button.setToolTip("Сравнить сотрудников, учредителей и руководителей исходной организации с кандидатами")
-        self.roles_button.setEnabled(False)
-        self.roles_button.clicked.connect(self.find_roles)
-        search_row.addWidget(self.roles_button)
+        # role-buttons-v1: отдельные кнопки вместо общей кнопки по учредителям/руководителям
+        self.founders_button = QPushButton("Поиск по учредителям")
+        self.founders_button.setToolTip("Учредители исходной организации среди учредителей, руководителей и сотрудников других организаций")
+        self.founders_button.setEnabled(False)
+        self.founders_button.clicked.connect(lambda: self.find_roles("founders"))
+        search_row.addWidget(self.founders_button)
+
+        self.directors_button = QPushButton("Поиск по руководителям")
+        self.directors_button.setToolTip("Руководители исходной организации среди учредителей, руководителей и сотрудников других организаций")
+        self.directors_button.setEnabled(False)
+        self.directors_button.clicked.connect(lambda: self.find_roles("directors"))
+        search_row.addWidget(self.directors_button)
 
         # separate-feature-windows-v1
         self.suppliers_button = QPushButton("Поставщики…")
@@ -421,7 +322,6 @@ class Window(QMainWindow):
             return
         self.frames = {}
         self.staff_button.setEnabled(False)
-        self.roles_button.setEnabled(False)
         self.candidates_button.setEnabled(False)
         self.tabs.clear()
         self.log.clear()
@@ -437,7 +337,8 @@ class Window(QMainWindow):
     def finished(self):
         self.open.setEnabled(True)
         self.staff_button.setEnabled("Сотрудники" in self.frames)
-        self.roles_button.setEnabled(bool(self.frames))
+        self.founders_button.setEnabled("Организации" in self.frames)
+        self.directors_button.setEnabled("Организации" in self.frames)
         self.candidates_button.setEnabled(bool(self.frames))
 
     def failed(self, message):
@@ -515,13 +416,11 @@ class Window(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Поиск по сотрудникам", str(exc))
 
-    def find_roles(self):
-        try:
-            source = self.inn.text().strip()
-            result = search_roles(self.frames, source)
-            RoleDialog(result, source, self).exec()
-        except Exception as exc:
-            QMessageBox.warning(self, "Учредители и руководители", str(exc))
+    def find_roles(self, mode):
+        if not self.frames:
+            QMessageBox.information(self, "Нет данных", "Сначала загрузите Excel.")
+            return
+        open_role_search(self, self.frames, self.inn.text().strip(), mode)
 
     def closeEvent(self, event):
         if self.loader and self.loader.isRunning():
@@ -530,6 +429,14 @@ class Window(QMainWindow):
         else:
             event.accept()
 
+
+# CANDIDATE_LAYOUT_CLEANUP_V1
+import candidate_layout_cleanup as _clc
+_clc.install(CandidateSearchDialog)
+
+# candidate-role-tabs-v1
+import candidate_role_tabs as _crt
+_crt.install(CandidateSearchDialog)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

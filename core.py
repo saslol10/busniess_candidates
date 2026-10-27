@@ -9,17 +9,18 @@ SCHEMAS = {
     "Покупки": ["ИНН организации", "ИНН поставщика", "Дата", "Сумма", "Код операции"],
     "Продажи": ["ИНН организации", "ИНН покупателя", "Дата", "Сумма", "Код операции"],
     "ККТ": ["ИНН организации", "Модель", "Заводской номер", "Адрес", "Дата регистрации", "Дата снятия"],
+    "Организации": ["ИНН организации"],
     "Банк": ["ИНН организации", "ИНН контрагента", "Дата", "Направление", "Сумма", "Назначение"],
-    "Организации": ["ИНН организации", "Наименование организации", "Роль в примере"],
 }
-OPTIONAL_SCHEMAS = {
+# Необязательные колонки: читаются, если есть в файле, и могут быть пустыми.
+OPTIONAL_COLS = {
     "Сотрудники": ["ФИО сотрудника", "ИНН сотрудника"],
-    "Организации": ["ФИО учредителя", "ИНН учредителя", "ФИО руководителя", "ИНН руководителя"],
+    "Организации": ["Наименование организации", "ФИО учредителя", "ИНН учредителя",
+                    "ФИО руководителя", "ИНН руководителя"],
 }
-OPTIONAL_COLUMNS = {column for columns in OPTIONAL_SCHEMAS.values() for column in columns}
-INN_COLS = {"ИНН организации": (10,), "ИНН поставщика": (10, 12), "ИНН покупателя": (10, 12),
-            "ИНН контрагента": (10, 12), "ИНН сотрудника": (12,), "ИНН учредителя": (12,),
-            "ИНН руководителя": (12,)}
+INN_COLS = {"ИНН организации": (10,), "ИНН сотрудника": (12,), "ИНН учредителя": (10, 12),
+            "ИНН руководителя": (12,), "ИНН поставщика": (10, 12), "ИНН покупателя": (10, 12),
+            "ИНН контрагента": (10, 12)}
 
 
 def clean(value):
@@ -101,8 +102,7 @@ def load_book(path):
             if absent:
                 error(f"{sheet}: отсутствуют колонки: {', '.join(absent)}")
                 continue
-            selected = SCHEMAS[sheet] + [c for c in OPTIONAL_SCHEMAS.get(sheet, []) if c in frame.columns]
-            frame = frame.loc[:, selected].copy()
+            frame = frame.loc[:, SCHEMAS[sheet] + [c for c in OPTIONAL_COLS.get(sheet, []) if c in frame.columns]].copy()
             for column in frame.columns:
                 frame[column] = frame[column].map(clean)
             frame = frame.loc[frame.ne("").any(axis=1)]
@@ -110,9 +110,7 @@ def load_book(path):
                 prefix = f"{sheet}, строка Excel {index + 2}: "
                 for col in frame.columns:
                     value = row[col]
-                    if not value and col != "Дата снятия":
-                        if col in OPTIONAL_COLUMNS:
-                            continue
+                    if not value and col != "Дата снятия" and col not in OPTIONAL_COLS.get(sheet, ()):
                         error(prefix + f"не заполнено поле «{col}».")
                         continue
                     if not value:

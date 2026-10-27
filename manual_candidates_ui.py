@@ -7,13 +7,13 @@ from core import valid_inn
 from catboost_results_ui import CandidateSearchDialog as BaseDialog
 from manual_candidate_logic import augment_result, present_organizations
 
-
 class CandidateSearchDialog(BaseDialog):
     def __init__(self, *args, **kwargs):
         self._manual_requested = set()
         self._manual_base = None
         self._manual_panel = None
         super().__init__(*args, **kwargs)
+        # main.py сначала перестраивает вкладки: панель добавляется после этой перестройки.
         QTimer.singleShot(0, self._manual_mount)
 
     def _manual_mount(self):
@@ -43,8 +43,8 @@ class CandidateSearchDialog(BaseDialog):
     def _manual_update_label(self):
         if hasattr(self, "_manual_label"):
             self._manual_label.setText("Ручное сравнение: " +
-                                       (", ".join(sorted(self._manual_requested)) or "организации не добавлены") +
-                                       ". Баллы рассчитывает выбранная модель, не задаются вручную.")
+                (", ".join(sorted(self._manual_requested)) or "организации не добавлены") +
+                ". Баллы рассчитывает выбранная модель, не задаются вручную.")
 
     def _manual_available(self):
         if self.running():
@@ -60,13 +60,12 @@ class CandidateSearchDialog(BaseDialog):
             return
         states = self._manual_base["states"]
         if not states["Статус"].eq("completed").any():
-            QMessageBox.warning(self, "Нет расчёта",
-                                "Ни одно направление не проверено. Сначала исправьте загрузку данных.")
+            QMessageBox.warning(self, "Нет расчёта", "Ни одно направление не проверено. Сначала исправьте загрузку данных.")
             return
         text, ok = QInputDialog.getMultiLineText(self, "Добавить в сравнение",
-                                                 "Введите ИНН организаций через пробел, запятую или с новой строки.\n"
-                                                 "Нужны записи этих организаций в загруженной книге.\n"
-                                                 "Каждый ИНН добавится в общий список и будет оценён выбранной моделью:")
+            "Введите ИНН организаций через пробел, запятую или с новой строки.\n"
+            "Нужны записи этих организаций в загруженной книге.\n"
+            "Каждый ИНН добавится в общий список и будет оценён выбранной моделью:")
         if not ok or not text.strip():
             return
         inns = set(re.split(r"[\s,;]+", text.strip()))
@@ -80,10 +79,9 @@ class CandidateSearchDialog(BaseDialog):
         absent = inns - present_organizations(self.frames)
         if absent:
             QMessageBox.warning(self, "Нет исходных записей",
-                                "Эти организации не найдены в столбце «ИНН организации» загруженной книги: " +
-                                ", ".join(sorted(
-                                    absent)) + ".\nДобавьте их реальные исходные данные и загрузите книгу заново. "
-                                               "Одного упоминания в качестве контрагента недостаточно. Пустую строку с нулевыми признаками не создаём.")
+                "Эти организации не найдены в столбце «ИНН организации» загруженной книги: " +
+                ", ".join(sorted(absent)) + ".\nДобавьте их реальные исходные данные и загрузите книгу заново. "
+                "Одного упоминания в качестве контрагента недостаточно. Пустую строку с нулевыми признаками не создаём.")
             return
         self._manual_requested.update(inns)
         self._manual_refresh()
@@ -92,7 +90,7 @@ class CandidateSearchDialog(BaseDialog):
         if not self._manual_available() or not self._manual_requested:
             return
         selected, ok = QInputDialog.getItem(self, "Убрать из ручного сравнения", "Организация:",
-                                            ["Все ручные организации"] + sorted(self._manual_requested), 0, False)
+            ["Все ручные организации"] + sorted(self._manual_requested), 0, False)
         if not ok:
             return
         if selected == "Все ручные организации":
@@ -107,7 +105,8 @@ class CandidateSearchDialog(BaseDialog):
             self._manual_requested,
             model_path=getattr(self, "_cb_path", None),
         )
-
+        # Основной список получает пересчитанные оценки всех кандидатов.
+        # Базовый обработчик также обновляет отдельную таблицу CatBoost.
         super().show_result(updated)
         self._manual_update_label()
         cb_info = updated["metadata"].get("manual_catboost", {})
@@ -123,3 +122,20 @@ class CandidateSearchDialog(BaseDialog):
         # При повторном поиске данные заново рассчитаны штатными модулями.
         self._manual_requested.intersection_update(present_organizations(self.frames))
         self._manual_refresh()
+
+
+# role-buttons-v1: кнопки «по учредителям» / «по руководителям» во втором окне
+from roles_ui import mount_role_buttons as _mount_role_buttons
+_RoleBaseDialog = CandidateSearchDialog
+
+
+class CandidateSearchDialog(_RoleBaseDialog):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        frames = args[0] if args else kwargs.get("frames")
+        inn = args[1] if len(args) > 1 else kwargs.get("source_inn", kwargs.get("inn", ""))
+        _mount_role_buttons(self, frames, inn)
+
+# split-role-detail-tabs-v1
+from split_role_detail_tabs import attach_split_role_tabs
+CandidateSearchDialog = attach_split_role_tabs(CandidateSearchDialog)
