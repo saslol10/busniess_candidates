@@ -1,4 +1,3 @@
-from PySide6.QtWidgets import QDialog, QVBoxLayout, QPlainTextEdit
 """Дополнительная таблица CatBoost поверх существующего окна поиска."""
 import importlib
 import json
@@ -7,7 +6,7 @@ import numpy as np
 import pandas as pd
 from PySide6.QtCore import Qt, QThread, Signal, QAbstractTableModel
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-                               QTableView, QFileDialog, QMessageBox, QHeaderView, QDoubleSpinBox)
+                               QTableView, QFileDialog, QMessageBox, QHeaderView, QDoubleSpinBox, QPlainTextEdit)
 from shiboken6 import isValid
 
 try:
@@ -104,12 +103,43 @@ class PredictWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class QwenWorker(QThread):
+    succeeded = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, source_inn, candidate_inn, candidate_row, warnings,
+                 states, evidence_by_group, parent=None):
+        super().__init__(parent)
+        self.source_inn = str(source_inn)
+        self.candidate_inn = str(candidate_inn)
+        self.candidate_row = candidate_row
+        self.warnings = warnings
+        self.states = states
+        self.evidence_by_group = evidence_by_group
+
+    def run(self):
+        try:
+            from llm_advisor import generate_conclusion
+            answer = generate_conclusion(
+                source_inn=self.source_inn,
+                candidate_inn=self.candidate_inn,
+                candidate_row=self.candidate_row,
+                warnings=self.warnings,
+                states=self.states,
+                evidence_by_group=self.evidence_by_group,
+            )
+            self.succeeded.emit(str(answer))
+        except Exception as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+
+
 class CandidateSearchDialog(BaseDialog):
     def __init__(self, *args, **kwargs):
         self._cb_worker = None
         self._cb_path = None
         self._cb_payload = None
         self._cb_frame = pd.DataFrame(columns=COLUMNS)
+        self._qwen_worker = None
         super().__init__(*args, **kwargs)
         panel = QWidget(self)
         self._cb_panel = panel
@@ -121,10 +151,8 @@ class CandidateSearchDialog(BaseDialog):
         self._cb_load = QPushButton("Выбрать модель .cbm…")
         self._cb_run = QPushButton("Рассчитать оценки")
         self._cb_save = QPushButton("Сохранить результат CatBoost…")
-        self._cb_train = QPushButton("Обучить CatBoost…")
-        self._cb_train.clicked.connect(self._train_model)
-        self._cb_qwen = QPushButton("Сформировать заключение Qwen")
-        self._cb_qwen.clicked.connect(self._generate_qwen)
+        self._qwen_button = QPushButton("Сформировать заключение Qwen")
+        self._qwen_button.setEnabled(False)
         self._cb_save.setEnabled(False)
         self._cb_low, self._cb_high = QDoubleSpinBox(), QDoubleSpinBox()
         for spin, value in ((self._cb_low, .20), (self._cb_high, .70)):
@@ -133,7 +161,7 @@ class CandidateSearchDialog(BaseDialog):
             spin.setSingleStep(.05)
             spin.setValue(value)
             spin.valueChanged.connect(self._cb_render)
-        for button in (self._cb_load, self._cb_run, self._cb_save):
+        for button in (self._cb_load, self._cb_run, self._cb_save, self._qwen_button):
             buttons.addWidget(button)
         buttons.addStretch()
         layout.addLayout(buttons)
@@ -150,6 +178,14 @@ class CandidateSearchDialog(BaseDialog):
         self._cb_table.setStyleSheet(
             "QTableView { background:white; color:#111; gridline-color:#777; } QHeaderView::section { background:#f4f4f4; color:#111; padding:5px; border:1px solid #aaa; }")
         layout.addWidget(self._cb_table, 1)
+        qwen_title = QLabel("<b>Заключение Qwen</b>")
+        self._qwen_output = QPlainTextEdit()
+        self._qwen_output.setReadOnly(True)
+        self._qwen_output.setPlaceholderText("Выберите кандидата и нажмите «Сформировать заключение Qwen».")
+        self._qwen_output.setMinimumHeight(150)
+        self._qwen_output.setMaximumHeight(300)
+        layout.addWidget(qwen_title)
+        layout.addWidget(self._qwen_output)
         note = QLabel("Балл класса 1 — не доказательство перехода бизнеса и не подтверждённая калиброванная вероятность. Отображение: 4 знака; Excel сохраняет исходную точность.")
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -161,7 +197,88 @@ class CandidateSearchDialog(BaseDialog):
         self._cb_load.clicked.connect(self._cb_choose)
         self._cb_run.clicked.connect(self._cb_predict)
         self._cb_save.clicked.connect(self._cb_export)
+        self._qwen_button.clicked.connect(self._qwen_generate)
         self._cb_display(self._cb_frame)
+
+    def _qwen_busy(self):
+        try:
+            return self._qwen_worker is not None and isValid(self._qwen_worker) and self._qwen_worker.isRunning()
+        except RuntimeError:
+            return False
+
+    def _qwen_generate(self):
+        if self._qwen_busy():
+            return
+        result = getattr(self, "result", None)
+        if not isinstance(result, dict):
+            QMessageBox.information(self, "Заключение Qwen", "Сначала дождитесь завершения общего поиска.")
+            return
+        features = result.get("features")
+        if not isinstance(features, pd.DataFrame) or features.empty or "candidate_inn" not in features:
+            QMessageBox.information(self, "Заключение Qwen", "Нет кандидатов для формирования заключения.")
+            return
+
+        # Используем выбранную строку расширенной таблицы CatBoost,
+        # а если она ещё не заполнена — строку, выбранную в основной таблице.
+        candidate_inn = None
+        current = self._cb_table.currentIndex()
+        if current.isValid() and current.row() < len(self._cb_frame):
+            candidate_inn = str(self._cb_frame.iloc[current.row()]["ИНН кандидата"])
+        if candidate_inn is None:
+            current = self.table.currentIndex()
+            if current.isValid():
+                model = self.table.model()
+                frame = getattr(model, "frame", None)
+                if isinstance(frame, pd.DataFrame) and current.row() < len(frame):
+                    candidate_inn = str(frame.iloc[current.row()]["candidate_inn"])
+        if candidate_inn is None:
+            candidate_inn = str(features.iloc[0]["candidate_inn"])
+
+        rows = features[features["candidate_inn"].astype(str) == candidate_inn]
+        if rows.empty:
+            QMessageBox.warning(self, "Заключение Qwen", "Выбранный кандидат отсутствует в текущем результате поиска.")
+            return
+        candidate_row = rows.iloc[0].to_dict()
+        states = result.get("states")
+        if isinstance(states, pd.DataFrame):
+            states_payload = states.to_dict("records")
+        else:
+            states_payload = states or []
+        raw = result.get("raw", {})
+        warnings = result.get("warnings", []) or []
+
+        self._qwen_button.setEnabled(False)
+        self._qwen_output.setPlainText(
+            "Формируется заключение Qwen для кандидата " + candidate_inn + "…\n"
+            "Ожидание ответа локальной модели Ollama."
+        )
+        worker = QwenWorker(
+            result.get("metadata", {}).get("source_inn", getattr(self, "source_inn", "")),
+            candidate_inn,
+            candidate_row,
+            warnings,
+            states_payload,
+            raw,
+            self,
+        )
+        self._qwen_worker = worker
+        worker.succeeded.connect(self._qwen_success)
+        worker.failed.connect(self._qwen_error)
+        worker.finished.connect(self._qwen_finished)
+        worker.start()
+
+    def _qwen_success(self, text):
+        self._qwen_output.setPlainText(text)
+
+    def _qwen_error(self, message):
+        self._qwen_output.setPlainText("Не удалось сформировать заключение Qwen:\n\n" + message)
+
+    def _qwen_finished(self):
+        self._qwen_button.setEnabled(True)
+        old = self._qwen_worker
+        self._qwen_worker = None
+        if old is not None and isValid(old):
+            old.deleteLater()
 
     def _cb_busy(self):
         try:
@@ -170,7 +287,7 @@ class CandidateSearchDialog(BaseDialog):
             return False
 
     def running(self):
-        return self._cb_busy() or super().running()
+        return self._cb_busy() or self._qwen_busy() or super().running()
 
     def start_search(self):
         if self._cb_busy():
@@ -179,6 +296,8 @@ class CandidateSearchDialog(BaseDialog):
         if hasattr(self, "_cb_table"):
             self._cb_payload = None
             self._cb_display(pd.DataFrame(columns=COLUMNS))
+            self._qwen_button.setEnabled(False)
+            self._qwen_output.clear()
             self._cb_status.setText("Поиск обновляется; предыдущие оценки сброшены.")
         return super().start_search()
 
@@ -187,7 +306,9 @@ class CandidateSearchDialog(BaseDialog):
         if hasattr(self, "_cb_table"):
             self._cb_payload = None
             self._cb_display(pd.DataFrame(columns=COLUMNS))
-            self._cb_status.setText("Кандидаты обновлены. Нажмите «Рассчитать оценки».")
+            self._qwen_button.setEnabled(True)
+            self._qwen_output.clear()
+            self._cb_status.setText("Кандидаты обновлены. Можно сформировать заключение Qwen.")
 
     def _cb_choose(self):
         path, _ = QFileDialog.getOpenFileName(self, "Выбрать модель CatBoost", "", "CatBoost (*.cbm)")
@@ -374,75 +495,3 @@ class CandidateSearchDialog(BaseDialog):
         finally:
             if temp and os.path.exists(temp):
                 os.unlink(temp)
-
-
-# --- Added active-window handlers (the class is imported by manual_candidates_ui.py) ---
-def _fixed_train_model(self):
-    paths, _ = QFileDialog.getOpenFileNames(
-        self, "Выберите Excel-файлы для обучения CatBoost", "", "Excel (*.xlsx *.xls)")
-    if not paths:
-        return
-    directory = QFileDialog.getExistingDirectory(
-        self, "Папка для сохранения новой модели CatBoost")
-    if not directory:
-        return
-    try:
-        from catboost_training import train_and_save
-        self._cb_train.setEnabled(False)
-        self._cb_status.setText("CatBoost обучается. Это может занять некоторое время…")
-        # Обучение выполняется через тот же официальный модуль, что и отдельная панель CatBoost.
-        result = train_and_save(paths, directory, allow_unvalidated=True, iterations=300)
-        model_path = result.get("model_path", "") if isinstance(result, dict) else ""
-        self._cb_status.setText("Модель CatBoost обучена и сохранена: " + str(model_path))
-        QMessageBox.information(self, "CatBoost обучен",
-            "Новая модель сохранена.\n\n" + str(model_path) +
-            "\n\nРядом сохранены catboost_model.json и training_report.json.")
-    except Exception as exc:
-        self._cb_status.setText("Обучение CatBoost не выполнено.")
-        QMessageBox.warning(self, "Ошибка обучения CatBoost", str(exc))
-    finally:
-        self._cb_train.setEnabled(True)
-
-
-def _fixed_generate_qwen(self):
-    if getattr(self, "result", None) is None:
-        QMessageBox.information(self, "Qwen", "Сначала дождитесь завершения общего поиска.")
-        return
-    index = self.table.currentIndex()
-    if not index.isValid():
-        QMessageBox.information(self, "Qwen", "Выберите кандидата в таблице.")
-        return
-    try:
-        import pandas as pd
-        from llm_advisor import generate_conclusion
-        row = self.result["features"].iloc[index.row()]
-        states = self.result.get("states", pd.DataFrame()).to_dict("records")
-        evidence = {}
-        for group, payload in self.result.get("raw", {}).items():
-            details = payload.get("details") if isinstance(payload, dict) else None
-            if isinstance(details, dict):
-                candidate = str(row.get("candidate_inn", ""))
-                evidence[group] = details.get(candidate, pd.DataFrame())
-            elif isinstance(details, pd.DataFrame):
-                evidence[group] = details
-        text = generate_conclusion(
-            str(row.get("source_inn", getattr(self, "source_inn", ""))),
-            str(row.get("candidate_inn", "")), row.to_dict(),
-            self.result.get("warnings", []), states, evidence)
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Заключение Qwen")
-        dialog.resize(900, 650)
-        box = QVBoxLayout(dialog)
-        editor = QPlainTextEdit(); editor.setReadOnly(True); editor.setPlainText(text)
-        box.addWidget(editor)
-        close = QPushButton("Закрыть"); close.clicked.connect(dialog.accept); box.addWidget(close)
-        dialog.exec()
-    except Exception as exc:
-        QMessageBox.warning(self, "Qwen", str(exc))
-
-
-try:
-    CandidateSearchDialog._train_model = _fixed_train_model
-    CandidateSearchDialog._generate_qwen = _fixed_generate_qwen
-except NameError:
-    pass

@@ -33,6 +33,29 @@ def _value(row, key, default="нет данных"):
     return value
 
 
+def _details_frame(value):
+    """
+    Приводит основание к DataFrame.
+
+    Поддерживает два формата:
+    1. DataFrame напрямую;
+    2. результат roles.search_roles(), где DataFrame находится
+       в поле details.
+    """
+    if value is None:
+        return None
+
+    if hasattr(value, "empty") and hasattr(value, "head"):
+        return value
+
+    if isinstance(value, dict):
+        details = value.get("details")
+        if details is not None:
+            return _details_frame(details)
+
+    return None
+
+
 def _state_text(states):
     if not states:
         return "- Сведения о статусах направлений не переданы."
@@ -50,7 +73,12 @@ def _evidence_text(evidence_by_group):
     if not evidence_by_group:
         return "- Подробные строки оснований не переданы."
     lines = []
-    for group, frame in evidence_by_group.items():
+    for group, value in evidence_by_group.items():
+        if group in {"founders", "directors"}:
+            continue
+
+        frame = _details_frame(value)
+
         if frame is None:
             continue
         try:
@@ -78,98 +106,151 @@ def _evidence_text(evidence_by_group):
     return "\n".join(lines) if lines else "- Строки оснований для кандидата отсутствуют."
 
 
-
-def _role_evidence_text(evidence_by_group):
-    """Возвращает подробные основания по учредителям и руководителям для Qwen."""
+def _role_evidence_text(evidence_by_group, candidate_inn=None):
+    """Возвращает подробные основания по учредителям и руководителям."""
     if not evidence_by_group:
         return "- Подробные основания по учредителям и руководителям не переданы."
 
     sections = []
-    role_groups = (("founders", "Учредители"), ("directors", "Руководители"))
-    for group, title in role_groups:
-        frame = evidence_by_group.get(group)
-        if frame is None:
-            continue
-        try:
-            if getattr(frame, "empty", True):
-                continue
-            records = frame.to_dict("records")
-        except Exception:
+
+    for group, title in (
+        ("founders", "Учредители"),
+        ("directors", "Руководители"),
+    ):
+        value = evidence_by_group.get(group)
+        frame = _details_frame(value)
+
+        if frame is None or frame.empty:
             continue
 
-        lines = [f"{title}:"]
-        for record in records:
-            person_inn = _value(record, "ИНН физлица")
-            fio = _value(record, "ФИО")
-            source_role = _value(record, "Роль в исходной организации")
-            candidate_role = _value(record, "Роль в организации-кандидате")
-            period = _value(record, "Период (для сотрудников)")
-            reason = _value(record, "Основание")
-            lines.append(
-                "- ФИО: {fio}; ИНН физлица: {inn}; "
-                "роль в исходной организации: {source_role}; "
-                "роль в организации-кандидате: {candidate_role}; "
-                "период: {period}; основание: {reason}.".format(
-                    fio=fio,
-                    inn=person_inn,
-                    source_role=source_role,
-                    candidate_role=candidate_role,
-                    period=period,
-                    reason=reason,
-                )
+        # В search_roles() возвращаются основания по всем кандидатам.
+        # Оставляем только выбранного кандидата.
+        if candidate_inn is not None:
+            candidate_column = next(
+                (
+                    column
+                    for column in (
+                        "ИНН кандидата",
+                        "candidate_inn",
+                        "ИНН организации-кандидата",
+                    )
+                    if column in frame.columns
+                ),
+                None,
             )
-        sections.append("\\n".join(lines))
+
+            if candidate_column:
+                frame = frame[
+                    frame[candidate_column].astype(str).str.strip()
+                    == str(candidate_inn).strip()
+                ].copy()
+
+        if frame.empty:
+            continue
+
+        lines = [f"**{title}**:"]
+
+        for record in frame.head(12).to_dict("records"):
+            inn = record.get("ИНН физлица", "")
+            fio = record.get("ФИО", "")
+            source_role = record.get("Роль в исходной организации", "")
+            candidate_role = record.get("Роль в организации-кандидате", "")
+            period = record.get("Период (для сотрудников)", "")
+            basis = record.get("Основание", "")
+
+            person = fio or "ФИО не указано"
+            identity = f"{person}"
+            if inn:
+                identity += f" (ИНН физлица: {inn})"
+
+            line = f"- {identity}"
+
+            roles = []
+            if source_role:
+                roles.append(f"в исходной организации — {source_role}")
+            if candidate_role:
+                roles.append(f"в организации-кандидате — {candidate_role}")
+
+            if roles:
+                line += "; " + ", ".join(roles)
+
+            if period:
+                line += f"; период: {period}"
+
+            if basis:
+                line += f"; основание: {basis}"
+
+            lines.append(line)
+
+        if len(lines) > 1:
+            sections.append("\n".join(lines))
 
     if not sections:
         return "- В переданных основаниях нет строк по учредителям или руководителям."
-    return "\\n\\n".join(sections)
+
+    return "\n\n".join(sections)
 
 def build_prompt(source_inn, candidate_inn, candidate_row, warnings,
                  states=None, evidence_by_group=None):
-    staff_found = _value(candidate_row, "staff_candidate_found", 0) == 1
-    suppliers_found = _value(candidate_row, "suppliers_candidate_found", 0) == 1
-    buyers_found = _value(candidate_row, "buyers_candidate_found", 0) == 1
-    kkt_found = _value(candidate_row, "kkt_candidate_found", 0) == 1
+    """Собирает промпт с фиксированным форматом раздела наблюдаемых совпадений."""
+    def found(group):
+        return _value(candidate_row, group + "_candidate_found", 0) == 1
+
     channels = []
-    if staff_found:
+    if found("staff"):
         channels.append(
-            "- Сотрудники: общих — {0}; доля сотрудников исходной организации — {1}%; "
-            "регулярных совпадений — {2}; последовательных периодов — {3}.".format(
+            "- **Сотрудники**: общий совпадающий сотрудник — {0}, "
+            "доля сотрудников исходной организации — {1}%, "
+            "регулярных совпадений — {2}, последовательных периодов — {3}.".format(
                 _value(candidate_row, "staff_common_count"),
                 _value(candidate_row, "staff_source_share_pct"),
                 _value(candidate_row, "staff_regular_common_count"),
                 _value(candidate_row, "staff_sequential_count")))
-    if suppliers_found:
+    if found("suppliers"):
         channels.append(
-            "- Поставщики: общих — {0}; доля контрагентов исходной — {1}%; "
-            "покрытие оборота исходной — {2}%; оборот исходной с общими — {3}.".format(
+            "- **Поставщики**: общий контрагент — {0}, "
+            "доля контрагентов исходной — {1}%, "
+            "покрытие оборота исходной — {2}%, "
+            "оборот исходной с общими — {3}.".format(
                 _value(candidate_row, "suppliers_common_count"),
                 _value(candidate_row, "suppliers_source_count_share_pct"),
                 _value(candidate_row, "suppliers_source_turnover_share_pct"),
                 _value(candidate_row, "suppliers_common_source_amount")))
-    if buyers_found:
+    if found("buyers"):
         channels.append(
-            "- Покупатели: общих — {0}; доля контрагентов исходной — {1}%; "
-            "покрытие оборота исходной — {2}%; оборот исходной с общими — {3}.".format(
+            "- **Покупатели**: общий контрагент — {0}, "
+            "доля контрагентов исходной — {1}%, "
+            "покрытие оборота исходной — {2}%, "
+            "оборот исходной с общими — {3}.".format(
                 _value(candidate_row, "buyers_common_count"),
                 _value(candidate_row, "buyers_source_count_share_pct"),
                 _value(candidate_row, "buyers_source_turnover_share_pct"),
                 _value(candidate_row, "buyers_common_source_amount")))
-    if kkt_found:
+    if found("kkt"):
         channels.append(
-            "- ККТ: общих — {0}; доля ККТ исходной организации — {1}%.".format(
+            "- **ККТ**: общих записей — {0}, "
+            "доля ККТ исходной организации — {1}%.".format(
                 _value(candidate_row, "kkt_common_count"),
                 _value(candidate_row, "kkt_source_share_pct")))
+
     for group, title in (("founders", "Учредители"), ("directors", "Руководители")):
-        if _value(candidate_row, group + "_candidate_found", 0) == 1:
+        if found(group):
             channels.append(
-                "- {0}: совпавших физлиц — {1}; оснований — {2} (совпадение по ИНН физлица, "
-                "роль хотя бы на одной стороне связи).".format(
-                    title, _value(candidate_row, group + "_common_persons"),
+                "- **{0}**: совпавших физлиц — {1}, оснований — {2}.".format(
+                    title,
+                    _value(candidate_row, group + "_common_persons"),
                     _value(candidate_row, group + "_basis_count")))
-    channels_text = "\n".join(channels) if channels else "- Совпадений среди успешно проверенных направлений не найдено."
-    role_text = _role_evidence_text(evidence_by_group)
-    warning_text = "\n".join(f"- {item}" for item in (warnings or [])) or "- Отдельные ограничения не переданы."
+
+    channels_text = "\n".join(channels) if channels else (
+        "- Совпадений среди успешно проверенных направлений не найдено.")
+    status_text = _state_text(states)
+    role_text = _role_evidence_text(
+        evidence_by_group,
+        candidate_inn=candidate_inn,
+    )
+    warning_text = "\n".join(
+        f"- {item}" for item in (warnings or [])
+    ) or "- Отдельные ограничения не переданы."
 
     return f"""Ты — беспристрастный аналитик. Составь подробное аналитическое заключение только по переданным расчётам.
 
@@ -179,17 +260,21 @@ def build_prompt(source_inn, candidate_inn, candidate_row, warnings,
 3. Разделяй наблюдаемые совпадения, гипотезы и ограничения данных.
 4. Если направление имеет статус «Нет данных» или «Ошибка», не трактуй его как отсутствие совпадений.
 5. Не называй индексом или вероятностью необученный экспертный вывод: в этом запросе такого показателя нет.
-6. Пиши по-русски, с заголовками.
-7. Если переданы строки в разделе «ОСНОВАНИЯ ПО УЧРЕДИТЕЛЯМ И РУКОВОДИТЕЛЯМ», обязательно перечисли их в разделе 1. Не заменяй их общими словами.
-8. Для каждого такого человека обязательно укажи ФИО, ИНН физлица, роль в исходной организации, роль в организации-кандидате, период (если передан) и основание.
-9. Учредителей и руководителей опиши отдельными подразделами. Совпадение по ИНН физлица является результатом сопоставления данных, но само по себе не доказывает переход бизнеса.
+6. Пиши по-русски, с заголовками и маркированными пунктами.
+7. Начинай ответ строго с заголовка **1. Наблюдаемые совпадения**.
+8. В первом разделе сначала выведи статусы направлений дословно из блока «СТАТУСЫ НАПРАВЛЕНИЙ», затем все рассчитанные пункты из блока «РАССЧИТАННЫЕ СОВПАДЕНИЯ».
+9. Не пересчитывай и не округляй значения. Используй числа и формулировки из расчётов.
+10. Если в расчётах есть учредители или руководители, обязательно добавь их отдельными пунктами после ККТ.
+11. Для каждого человека из раздела «ОСНОВАНИЯ ПО УЧРЕДИТЕЛЯМ И РУКОВОДИТЕЛЯМ» обязательно укажи ФИО, ИНН физлица, роль в исходной организации, роль в организации-кандидате, период (если передан) и основание.
+12. Учредителей и руководителей опиши отдельными подразделами внутри раздела 1. Совпадение по ИНН физлица является результатом сопоставления данных, но само по себе не доказывает переход бизнеса.
+13. После раздела 1 используй ровно такие разделы: «2. Осторожная оценка согласованности данных», «3. Возможные добросовестные объяснения», «4. Что дополнительно проверить или запросить», «5. Ограничения вывода».
 
 ОБЪЕКТЫ АНАЛИЗА:
 - Исходная организация: ИНН {source_inn}
 - Кандидат: ИНН {candidate_inn}
 
 СТАТУСЫ НАПРАВЛЕНИЙ:
-{_state_text(states)}
+{status_text}
 
 РАССЧИТАННЫЕ СОВПАДЕНИЯ:
 {channels_text}
@@ -197,20 +282,24 @@ def build_prompt(source_inn, candidate_inn, candidate_row, warnings,
 ОСНОВАНИЯ ПО УЧРЕДИТЕЛЯМ И РУКОВОДИТЕЛЯМ:
 {role_text}
 
-ПРИМЕРЫ СТРОК ВСЕХ ОСНОВАНИЙ:
-{_evidence_text(evidence_by_group)}
-
 ОГРАНИЧЕНИЯ И ПРЕДУПРЕЖДЕНИЯ:
 {warning_text}
 
-ФОРМАТ ОТВЕТА:
-1. Наблюдаемые совпадения.
-2. Осторожная оценка согласованности данных — без вывода о нарушении.
-3. Возможные добросовестные объяснения, только как гипотезы.
-4. Что дополнительно проверить или запросить для проверки гипотез.
+ФОРМАТ ПЕРВОГО РАЗДЕЛА:
+**1. Наблюдаемые совпадения**
+Статусы направлений:
+[перечисли статусы из блока выше]
+
+[перечисли пункты сотрудников, поставщиков, покупателей и ККТ из расчётов]
+
+[если есть данные, отдельные пункты **Учредители** и **Руководители** с подробными людьми и ролями]
+
+После этого напиши остальные разделы в указанном порядке:
+2. Осторожная оценка согласованности данных.
+3. Возможные добросовестные объяснения — только как гипотезы.
+4. Что дополнительно проверить или запросить.
 5. Ограничения вывода.
 """
-
 
 def generate_conclusion(source_inn, candidate_inn, candidate_row, warnings,
                         states=None, evidence_by_group=None,

@@ -27,6 +27,8 @@ from core import load_book, valid_inn
 from kkt_search import open_kkt_dialog
 from staff import search_staff
 from trade_ui import TradeDialog
+from roles import search_roles
+from roles_ui import RoleDialog
 
 
 class CompactMessageBoxes(QObject):
@@ -267,6 +269,18 @@ class Window(QMainWindow):
         self.kkt_button.clicked.connect(lambda: open_kkt_dialog(self))
         search_row.addWidget(self.kkt_button)
 
+        self.founders_button = QPushButton("Поиск по учредителям")
+        self.founders_button.setEnabled(False)
+        self.founders_button.setToolTip("Найти организации, где лица исходной организации являются учредителями")
+        self.founders_button.clicked.connect(lambda: self.open_role("founders"))
+        search_row.addWidget(self.founders_button)
+
+        self.directors_button = QPushButton("Поиск по руководителям")
+        self.directors_button.setEnabled(False)
+        self.directors_button.setToolTip("Найти организации, где лица исходной организации являются руководителями")
+        self.directors_button.clicked.connect(lambda: self.open_role("directors"))
+        search_row.addWidget(self.directors_button)
+
         self.candidates_button = QPushButton("Общий поиск кандидатов…")
         self.candidates_button.setEnabled(False)
         self.candidates_button.setStyleSheet("background:#d7e7ff;font-weight:600;color:#0e294b")
@@ -319,6 +333,8 @@ class Window(QMainWindow):
             return
         self.frames = {}
         self.staff_button.setEnabled(False)
+        self.founders_button.setEnabled(False)
+        self.directors_button.setEnabled(False)
         self.candidates_button.setEnabled(False)
         self.tabs.clear()
         self.log.clear()
@@ -334,6 +350,9 @@ class Window(QMainWindow):
     def finished(self):
         self.open.setEnabled(True)
         self.staff_button.setEnabled("Сотрудники" in self.frames)
+        roles_available = "Организации" in self.frames
+        self.founders_button.setEnabled(roles_available)
+        self.directors_button.setEnabled(roles_available)
         self.candidates_button.setEnabled(bool(self.frames))
 
     def failed(self, message):
@@ -356,6 +375,20 @@ class Window(QMainWindow):
         self.log.setPlainText("\n".join(parts))
         self.inn.clear()
         self.render()
+
+    def open_role(self, mode):
+        if not self.frames:
+            QMessageBox.information(self, "Нет данных", "Сначала загрузите Excel.")
+            return
+        inn = self.inn.text().strip()
+        if not valid_inn(inn, (10,)):
+            QMessageBox.warning(self, "ИНН", "Введите корректный 10-значный ИНН организации.")
+            return
+        try:
+            result = search_roles(self.frames, inn, mode)
+            RoleDialog(result, inn, self).exec()
+        except Exception as exc:
+            QMessageBox.warning(self, "Поиск по ролям", str(exc))
 
     def open_trade(self, mode=None):
         if not self.frames:

@@ -91,6 +91,7 @@ def _current_inn(dialog, current):
 
 
 def add_role_tabs(dialog, inn):
+    _remove_role_search_tabs(dialog)
     tabs = _details_tabs(dialog)
     if tabs is None or not inn:
         return
@@ -118,7 +119,27 @@ def add_role_tabs(dialog, inn):
         tabs.addTab(view, f"{title} ({len(frame)})")
 
 
+
+def _remove_role_search_tabs(dialog):
+    """Удаляет дублирующие вкладки поиска ролей из окна кандидатов.
+
+    Кнопки «Поиск по учредителям» и «Поиск по руководителям»
+    остаются в главном окне; здесь остаются только вкладки оснований
+    «Учредители» и «Руководители».
+    """
+    prefixes = ("поиск по учредителям", "поиск по руководителям")
+    for tabs in dialog.findChildren(QTabWidget):
+        for index in range(tabs.count() - 1, -1, -1):
+            title = tabs.tabText(index).strip().lower()
+            if title.startswith(prefixes):
+                widget = tabs.widget(index)
+                tabs.removeTab(index)
+                if widget is not None:
+                    widget.deleteLater()
+
+
 def arrange(dialog):
+    _remove_role_search_tabs(dialog)
     # 1. Отдельные кнопки «Поиск по учредителям/руководителям» не нужны.
     bar = getattr(dialog, "_role_bar", None)
     if bar is not None:
