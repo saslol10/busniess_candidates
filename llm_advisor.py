@@ -78,6 +78,52 @@ def _evidence_text(evidence_by_group):
     return "\n".join(lines) if lines else "- Строки оснований для кандидата отсутствуют."
 
 
+
+def _role_evidence_text(evidence_by_group):
+    """Возвращает подробные основания по учредителям и руководителям для Qwen."""
+    if not evidence_by_group:
+        return "- Подробные основания по учредителям и руководителям не переданы."
+
+    sections = []
+    role_groups = (("founders", "Учредители"), ("directors", "Руководители"))
+    for group, title in role_groups:
+        frame = evidence_by_group.get(group)
+        if frame is None:
+            continue
+        try:
+            if getattr(frame, "empty", True):
+                continue
+            records = frame.to_dict("records")
+        except Exception:
+            continue
+
+        lines = [f"{title}:"]
+        for record in records:
+            person_inn = _value(record, "ИНН физлица")
+            fio = _value(record, "ФИО")
+            source_role = _value(record, "Роль в исходной организации")
+            candidate_role = _value(record, "Роль в организации-кандидате")
+            period = _value(record, "Период (для сотрудников)")
+            reason = _value(record, "Основание")
+            lines.append(
+                "- ФИО: {fio}; ИНН физлица: {inn}; "
+                "роль в исходной организации: {source_role}; "
+                "роль в организации-кандидате: {candidate_role}; "
+                "период: {period}; основание: {reason}.".format(
+                    fio=fio,
+                    inn=person_inn,
+                    source_role=source_role,
+                    candidate_role=candidate_role,
+                    period=period,
+                    reason=reason,
+                )
+            )
+        sections.append("\\n".join(lines))
+
+    if not sections:
+        return "- В переданных основаниях нет строк по учредителям или руководителям."
+    return "\\n\\n".join(sections)
+
 def build_prompt(source_inn, candidate_inn, candidate_row, warnings,
                  states=None, evidence_by_group=None):
     staff_found = _value(candidate_row, "staff_candidate_found", 0) == 1
@@ -122,17 +168,21 @@ def build_prompt(source_inn, candidate_inn, candidate_row, warnings,
                     title, _value(candidate_row, group + "_common_persons"),
                     _value(candidate_row, group + "_basis_count")))
     channels_text = "\n".join(channels) if channels else "- Совпадений среди успешно проверенных направлений не найдено."
+    role_text = _role_evidence_text(evidence_by_group)
     warning_text = "\n".join(f"- {item}" for item in (warnings or [])) or "- Отдельные ограничения не переданы."
 
-    return f"""Ты — беспристрастный аналитик. Составь краткое аналитическое заключение только по переданным расчётам.
+    return f"""Ты — беспристрастный аналитик. Составь подробное аналитическое заключение только по переданным расчётам.
 
 ЖЁСТКИЕ ПРАВИЛА:
-1. Не придумывай суммы, даты, названия, события и причины, которых нет во входных данных.
-2. Не утверждай виновность, умысел, незаконность или факт перехода бизнеса.
+1. Не придумывай суммы, даты, названия, события, роли, ФИО, ИНН или причины, которых нет во входных данных.
+2. Не утверждай виновность, умысел, незаконность или доказанный факт перехода бизнеса.
 3. Разделяй наблюдаемые совпадения, гипотезы и ограничения данных.
 4. Если направление имеет статус «Нет данных» или «Ошибка», не трактуй его как отсутствие совпадений.
-5. Не называй индексом или вероятностью необученный экспертный вывод: в этом запросе такого покзателя нет.
-6. Пиши по-русски, с заголовками и без лишней риторики.
+5. Не называй индексом или вероятностью необученный экспертный вывод: в этом запросе такого показателя нет.
+6. Пиши по-русски, с заголовками.
+7. Если переданы строки в разделе «ОСНОВАНИЯ ПО УЧРЕДИТЕЛЯМ И РУКОВОДИТЕЛЯМ», обязательно перечисли их в разделе 1. Не заменяй их общими словами.
+8. Для каждого такого человека обязательно укажи ФИО, ИНН физлица, роль в исходной организации, роль в организации-кандидате, период (если передан) и основание.
+9. Учредителей и руководителей опиши отдельными подразделами. Совпадение по ИНН физлица является результатом сопоставления данных, но само по себе не доказывает переход бизнеса.
 
 ОБЪЕКТЫ АНАЛИЗА:
 - Исходная организация: ИНН {source_inn}
@@ -144,7 +194,10 @@ def build_prompt(source_inn, candidate_inn, candidate_row, warnings,
 РАССЧИТАННЫЕ СОВПАДЕНИЯ:
 {channels_text}
 
-ПРИМЕРЫ СТРОК ОСНОВАНИЙ:
+ОСНОВАНИЯ ПО УЧРЕДИТЕЛЯМ И РУКОВОДИТЕЛЯМ:
+{role_text}
+
+ПРИМЕРЫ СТРОК ВСЕХ ОСНОВАНИЙ:
 {_evidence_text(evidence_by_group)}
 
 ОГРАНИЧЕНИЯ И ПРЕДУПРЕЖДЕНИЯ:
